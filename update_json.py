@@ -8,11 +8,11 @@ def fetch_latest_release(repo_url, keyword):
     headers = {"Accept": "application/vnd.github+json"}
     response = requests.get(api_url, headers=headers)
     releases = response.json()
+    sorted_releases = sorted(releases, key=lambda x: x["published_at"], reverse=True)
 
-    for release in releases:
+    for release in sorted_releases:
         if keyword in release["name"]:
             return release
-            
 
     raise ValueError(f"No release found containing the keyword '{keyword}'.")
 
