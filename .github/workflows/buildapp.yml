@@ -48,11 +48,14 @@ jobs:
       - name: Install Dependencies
         run: brew install ldid dpkg make
 
+      - name: Set PATH environment variable
+        run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH 
+
       - name: Setup Theos
         uses: actions/checkout@v4.1.1
         with:
           repository: theos/theos
-          ref: 3da31488281ecf4394d10302d2629607f4a1aa07
+          ref: master
           path: theos
           submodules: recursive
 
@@ -60,7 +63,7 @@ jobs:
         id: SDK
         uses: actions/cache@v4.0.1
         env:
-          cache-name: iOS-16.2-SDK
+          cache-name: iOS-16.4-SDK
         with:
           path: theos/sdks/
           key: ${{ env.cache-name }}
@@ -68,7 +71,7 @@ jobs:
       - name: Download iOS 16.4 SDK
         if: steps.SDK.outputs.cache-hit != 'true'
         run: |
-          git clone -n --depth=1 --filter=tree:0 https://github.com/arichorn/sdks/
+          git clone -n --depth=1 --filter=tree:0 https://github.com/arichornlover/sdks/
           cd sdks
           git sparse-checkout set --no-cone iPhoneOS16.4.sdk
           git checkout
@@ -93,15 +96,28 @@ jobs:
       - name: Prepare YouTube iPA
         run: |
           wget "$YOUTUBE_URL" --no-verbose -O main/YouTube.ipa
-          unzip -q main/YouTube.ipa -d main/tmp
-          echo "YT_VERSION=$(grep -A 1 '<key>CFBundleVersion</key>' main/tmp/Payload/YouTube.app/Info.plist | grep '<string>' | awk -F'[><]' '{print $3}')" >> $GITHUB_ENV
-          rm -rf main/tmp/Payload/YouTube.app/_CodeSignature/CodeResources
-          rm -rf main/tmp/Payload/YouTube.app/PlugIns/*
-          cp -R main/Extensions/*.appex main/tmp/Payload/YouTube.app/PlugIns
-          echo "YTLITE_VERSION=$(grep ^PACKAGE_VERSION ${{ github.workspace }}/main/Tweaks/YTLite/Makefile | awk '{print $3}')" >> $GITHUB_ENV
+          cd ${{ github.workspace }}/main
+          mv YouTube.ipa YouTube.zip
+          unzip -q YouTube.zip
+          youtube_version=$(defaults read "$(pwd)/Payload/YouTube.app/Info" CFBundleVersion)
+          echo "==> YouTube v$youtube_version downloaded!"
+          sed -i '' "17s#.*#YOUTUBE_VERSION = ${youtube_version}#g" Makefile
+          echo "youtube_version=${youtube_version}" >> $GITHUB_OUTPUT
         env:
           THEOS: ${{ github.workspace }}/theos
           YOUTUBE_URL: ${{ inputs.decrypted_youtube_url }}
+
+      - name: Prepare YouTube iPA
+        id: prepare_youtube
+        run: |
+          wget "$YOUTUBE_URL" --no-verbose -O main/YouTube.ipa
+          cd ${{ github.workspace }}/main
+          mv YouTube.ipa YouTube.zip
+          unzip -q YouTube.zip
+          youtube_version=$(defaults read "$(pwd)/Payload/YouTube.app/Info" CFBundleVersion)
+          echo "==> YouTube v$youtube_version downloaded!"
+          sed -i '' "17s#.*#YOUTUBE_VERSION = ${youtube_version}#g" Makefile
+          echo "youtube_version=${youtube_version}" >> $GITHUB_OUTPUT
 
       - name: Fix Compiling & Build Package
         id: build_package
@@ -122,13 +138,33 @@ jobs:
           BUNDLE_ID: ${{ inputs.bundle_id }}
           APP_NAME: ${{ inputs.app_name }}
 
+      - name: Fix compiling & Build Package
+        id: build_package
+        run: |
+          cd ${{ github.workspace }}/main
+          sed -i '' "27s#.*#BUNDLE_ID = ${{ env.BUNDLE_ID }}#g" Makefile                          # Modify the bundle ID
+          sed -i '' "26s#.*#DISPLAY_NAME = ${{ env.APP_NAME }}#g" Makefile                        # Modify the app name
+          sed -i '' "1s#.*#export TARGET = iphone:clang:${{ inputs.sdk_version }}:14.0#g" Makefile # Modify the SDK version
+          make package THEOS_PACKAGE_SCHEME=rootless IPA=Payload/YouTube.app FINALPACKAGE=1
+          echo "package=$(ls -t packages | head -n1)" >>$GITHUB_OUTPUT
+          echo -e "==> \033[1mSHASUM256: $(shasum -a 256 packages/*.ipa | cut -f1 -d' ')\033[0m"
+          echo -e "==> \033[1mBundle ID: ${{ env.BUNDLE_ID }}\033[0m"
+        env:
+          THEOS: ${{ github.workspace }}/theos
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+          APP_NAME: ${{ inputs.app_name }}
+
       - name: Upload Artifact
+        if: ${{ inputs.upload_artifact }}
         uses: actions/upload-artifact@v4.3.1
+        env:
+          YTLITE_VERSION: ${{ env.YTLITE_VERSION }}
+          YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
         with:
-          name: YTLitePlus_${{ env.YT_VERSION }}_${{ env.YTLITE_VERSION }}
+          name: YTLitePlus_${{ env.YOUTUBE_VERSION }}_${{ env.YTLITE_VERSION }}
           path: ${{ github.workspace }}/main/packages/${{ steps.build_package.outputs.package }}
           if-no-files-found: error
-      
+
       - name: Prepare Release Notes
         run: |
           export TODAY=$(date '+%Y-%m-%d')
@@ -140,6 +176,7 @@ jobs:
         uses: softprops/action-gh-release@v2.0.4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          YOUTUBE_VERSION: ${{ steps.prepare_youtube.outputs.youtube_version }}
           DRAFT: ${{ inputs.create_release }}
         with:
           tag_name: v${{ env.YT_VERSION }}-${{ env.YTLITE_VERSION }}
